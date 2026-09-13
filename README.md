@@ -21,6 +21,7 @@ let rec sum n acc =
 あらゆる用途で最速・最小だと主張するものではありません。**
 対応範囲と ABI は [言語仕様](docs/language.md)、測定方法と結果は
 [ベンチマーク](docs/benchmarks.md) を参照してください。
+任意の外部コンパイラとの比較には [比較ランナー](docs/toolchain-benchmarks.md) を使用できます。
 
 ## ビルド
 

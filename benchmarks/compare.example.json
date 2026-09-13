@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "samples": 15,
+  "warmups": 3,
+  "runtime_samples": 7,
+  "tools": [
+    {
+      "id": "fsw",
+      "label": "fsw",
+      "extension": "fs",
+      "text_abi": "utf16-object",
+      "version": ["{root}/build/fsw", "--version"],
+      "build": {
+        "default": ["{root}/build/fsw", "{source}", "-o", "{output}"]
+      }
+    }
+  ]
+}
