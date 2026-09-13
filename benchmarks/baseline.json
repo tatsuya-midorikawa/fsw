@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "timestamp": "2026-09-13T18:11:53.838Z",
+  "platform": {
+    "os": "darwin",
+    "release": "25.6.0",
+    "arch": "arm64",
+    "cpu": "Apple M1 Max",
+    "node": "v20.17.0"
+  },
+  "compiler": {
+    "version": "fsw 0.1.0-dev",
+    "executable_bytes": 295648,
+    "sha256": "d78ac36d734b77d202db9855d9f5b9d4a73849291216f4f461039b6ed0992952"
+  },
+  "samples": 21,
+  "warmups": 3,
+  "workloads": {
+    "add": {
+      "source_bytes": 20,
+      "source_sha256": "9adc6ad399a371487e8bbf290a54471ba17a9357a2d40d89c5400224eb27e9a6",
+      "wasm_bytes": 41,
+      "wasm_sha256": "1b9b0495b4e9f20e94096f157f18234504f0b9d6630bc4e7fbca2f005cc6769b",
+      "initial_memory_bytes": 0,
+      "wall_median_ms": 4.3177,
+      "wall_p90_ms": 4.9199,
+      "compiler_median_ms": 0.025,
+      "compiler_p90_ms": 0.031
+    },
+    "kernels": {
+      "source_bytes": 365,
+      "source_sha256": "8d485ac1414777cc741d3083c7d8962de661a8ecc79d0dacbb050bcc6620da77",
+      "wasm_bytes": 249,
+      "wasm_sha256": "df0c35b3e7fce5a8ca4b38f57f1beeaf9e002e8bff1083a2aecf96337c16124a",
+      "initial_memory_bytes": 0,
+      "wall_median_ms": 4.1139,
+      "wall_p90_ms": 5.046,
+      "compiler_median_ms": 0.077,
+      "compiler_p90_ms": 0.085
+    },
+    "bulk_1000": {
+      "source_bytes": 20780,
+      "source_sha256": "ab15473ca9781ad973c594691ffaedd2b197ab90dbc5dbf2152bcc1d859b617b",
+      "wasm_bytes": 17729,
+      "wasm_sha256": "2c044fe88fc745bb624d92d75941b8dad8875d4d62df0c795369f7e4db82ffcc",
+      "initial_memory_bytes": 0,
+      "wall_median_ms": 6.1998,
+      "wall_p90_ms": 7.3839,
+      "compiler_median_ms": 1.991,
+      "compiler_p90_ms": 2.077
+    },
+    "arrays": {
+      "source_bytes": 471,
+      "source_sha256": "c6109f6b483ee0e6ec121511ece8896c7a66c9b362e5b621653861c2c15b60ef",
+      "wasm_bytes": 680,
+      "wasm_sha256": "d28a03c0617c4514573f86a90d17842299fedf2a5a7c705b86dae863cdd629ec",
+      "initial_memory_bytes": 65536,
+      "wall_median_ms": 3.9113,
+      "wall_p90_ms": 5.0728,
+      "compiler_median_ms": 0.093,
+      "compiler_p90_ms": 0.107
+    },
+    "functional": {
+      "source_bytes": 431,
+      "source_sha256": "a4512c060c75f270f63b58cce9325da2e5e5e8b492b26fe5de452e1da5c44965",
+      "wasm_bytes": 1051,
+      "wasm_sha256": "2b4a15099fe208a91b88bc272d56ac8bf56eb1e84bfe42c5da139a41b22df7a7",
+      "initial_memory_bytes": 65536,
+      "wall_median_ms": 4.4834,
+      "wall_p90_ms": 5.5784,
+      "compiler_median_ms": 0.116,
+      "compiler_p90_ms": 0.127
+    }
+  },
+  "execution": {
+    "fibonacci_28": {
+      "iterations": 5,
+      "median_ns_per_call": 1148575
+    },
+    "fibonacci_fast_40": {
+      "iterations": 100000,
+      "median_ns_per_call": 17.15
+    },
+    "sum_10000": {
+      "iterations": 1000,
+      "median_ns_per_call": 8.38
+    },
+    "functional_sum_squares_3": {
+      "iterations": 100000,
+      "median_ns_per_call": 42.76
+    }
+  }
+}

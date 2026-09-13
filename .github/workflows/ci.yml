@@ -1,0 +1,66 @@
+name: compiler
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Configure without package downloads
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+      - name: Native compiler and Wasm execution
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: FSharp reference compatibility
+        shell: bash
+        run: |
+          binary=build/fsw
+          if [ "$RUNNER_OS" = "Windows" ]; then binary=build/Release/fsw.exe; fi
+          node tests/differential.mjs "$binary"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fsw-${{ matrix.os }}
+          path: |
+            build/fsw
+            build/Release/fsw.exe
+            LICENSE
+          if-no-files-found: error
+          retention-days: 7
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Configure with AddressSanitizer and UndefinedBehaviorSanitizer
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure
+      - name: Deterministic source fuzzing
+        run: |
+          c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -DFSW_STANDALONE_FUZZ src/frontend.cpp src/check.cpp src/wasm.cpp tests/fuzz.cpp -o build/fsw-fuzz
+          build/fsw-fuzz examples/math.fs examples/arrays.fs examples/functional.fs examples/browser/app.fs

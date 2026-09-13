@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fsw: FSharp to Wasm</title>
+<style>
+  body { font: 1rem system-ui; max-width: 38rem; margin: 3rem auto; padding: 0 1rem; }
+  input, button { font: inherit; padding: .5rem; }
+  output { display: block; margin-top: 1rem; }
+</style>
+<h1>F# in a small WebAssembly module</h1>
+<form id="calculator">
+  <label for="count">Fibonacci index (0–46)</label>
+  <input id="count" type="number" min="0" max="46" step="1" value="20" required>
+  <button id="calculate" disabled>Calculate</button>
+  <output id="result" for="count" aria-live="polite">Loading…</output>
+</form>
+<script type="module">
+  const form = document.getElementById('calculator');
+  const result = document.getElementById('result');
+  const button = document.getElementById('calculate');
+  let wasm;
+  const decoder = new TextDecoder('utf-16le', { ignoreBOM: true });
+  function text(pointer) {
+    const buffer = wasm.memory.buffer;
+    const length = new DataView(buffer).getUint32(pointer, true);
+    return decoder.decode(new Uint8Array(buffer, pointer + 8, length * 2));
+  }
+  function render() {
+    if (!form.reportValidity()) return;
+    try {
+      wasm.render();
+    } catch (error) {
+      result.textContent = `Execution failed: ${error.message}`;
+    }
+  }
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    render();
+  });
+  try {
+    const response = await fetch('app.wasm');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {
+      dom: {
+        readInput: id => document.getElementById(text(id)).valueAsNumber,
+        showResult: (id, value) => { document.getElementById(text(id)).textContent = String(value); }
+      }
+    });
+    wasm = instance.exports;
+    button.disabled = false;
+    render();
+  } catch (error) {
+    result.textContent = `Could not load app.wasm: ${error.message}`;
+  }
+</script>
+</html>

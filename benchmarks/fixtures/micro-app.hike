@@ -1,0 +1,32 @@
+package main
+
+extern func set_text(id int, text string, length int)
+extern func set_number(id int, value int)
+
+func fibonacci(n int) int {
+    if n < 2 {
+        return n
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+cfunc InitApp() {
+    status := "Ready (WebAssembly)"
+    set_text(0, status, len(status))
+    set_number(1, 0)
+}
+
+cfunc RunComputation(n int) int {
+    return fibonacci(n)
+}
+
+cfunc Render(n int) int {
+    result := fibonacci(n)
+    message := "Odd: café / 日本語 / 😀"
+    if n % 2 == 0 {
+        message = "Even: café / 日本語 / 😀"
+    }
+    set_text(0, message, len(message))
+    set_number(1, result)
+    return result
+}
