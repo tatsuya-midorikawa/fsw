@@ -69,7 +69,7 @@ public:
 
 enum class Kind {
     Literal, Name, Unary, Binary, Call, If, Block, Let, Assign,
-    While, For, Match, Tuple, Annotate, String, Array, Index, Length, Do
+    While, For, Match, Tuple, Annotate, String, Array, Index, Length, Do, Lambda
 };
 
 enum class Builtin {
@@ -105,6 +105,9 @@ struct Expr {
     bool global = false;
     Expr(Kind kind, Token token) : kind(kind), token(token), name(token.text) {}
 };
+
+ExprPtr node(Kind kind, Token token);
+ExprPtr finish(ExprPtr value);
 
 struct Local {
     std::string name;

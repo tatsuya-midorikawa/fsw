@@ -63,8 +63,8 @@ MSVC では C/C++ ランタイムを静的リンクします。UTF-8 ソース�
 日本語・空白を含む入出力パスを扱える構成です。
 別の CMake ジェネレーターでは実行ファイルの配置先が異なる場合があります。
 
-macOS arm64 では実行検証済みです。Windows / Linux のビルドとテストは CI に定義していますが、
-初期実装時点ではその実行結果をまだ確認していません。
+macOS arm64 のローカル検証に加え、Windows Server 2022、macOS 14、Ubuntu 24.04 の
+CI でビルド・Wasm 実行・F# 照合を確認しています。Linux ではサニタイザー検証も実行します。
 
 ## 実行
 
@@ -76,6 +76,9 @@ node -e "WebAssembly.instantiate(require('node:fs').readFileSync('build/math.was
 ```
 
 ブラウザー用の例は `examples/browser/` にあります。
+
+`examples/functional.fs` にはラムダ、`Array.map`、`Array.fold`、`Array.iter` の例もあります。
+これらの配列処理は型付きのループへ変換し、クロージャー用ランタイムを追加しません。
 
 ```sh
 ./build/fsw examples/browser/app.fs -o examples/browser/app.wasm
@@ -132,7 +135,7 @@ Windows では `build/Release/fsw.exe` です。別の配置先は第 1 引数�
 ```sh
 c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
   -DFSW_STANDALONE_FUZZ src/frontend.cpp src/check.cpp src/wasm.cpp tests/fuzz.cpp -o build/fsw-fuzz
-build/fsw-fuzz examples/math.fs examples/arrays.fs examples/browser/app.fs
+build/fsw-fuzz examples/math.fs examples/arrays.fs examples/functional.fs examples/browser/app.fs
 ```
 
 このサニタイザー用コマンドは対応する Clang / GCC 環境用です。

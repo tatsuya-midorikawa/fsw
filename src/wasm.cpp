@@ -173,6 +173,8 @@ class Emitter {
     std::vector<int> global_indices;
     std::vector<bool> live_functions;
     std::vector<bool> live_globals;
+    std::vector<bool> region_safe;
+    std::vector<bool> allocates_memory;
     std::set<std::string> exports;
     std::vector<std::size_t> pending;
     bool memory = false;
@@ -262,15 +264,47 @@ class Emitter {
             for (const auto& arm : expr.arms) if (tail_addition(*arm.body, index)) return true;
         return false;
     }
-    bool leaf_region(const Expr& expr, int index) {
-        if (expr.kind == Kind::Call && expr.index >= 0 && expr.index != index) return false;
-        if (expr.kind == Kind::Assign && expr.args[0]->kind == Kind::Name && expr.args[0]->global) return false;
-        for (const auto& arg : expr.args) if (!leaf_region(*arg, index)) return false;
+    void effects(const Expr& expr, std::size_t caller, std::vector<std::vector<std::size_t>>& callers) {
+        if (expr.kind == Kind::Call && expr.index >= 0)
+            callers[static_cast<std::size_t>(expr.index)].push_back(caller);
+        if (expr.kind == Kind::Assign && expr.args[0]->kind == Kind::Name && expr.args[0]->global)
+            region_safe[caller] = false;
+        for (const auto& arg : expr.args) effects(*arg, caller, callers);
         for (const auto& arm : expr.arms) {
-            if (arm.guard && !leaf_region(*arm.guard, index)) return false;
-            if (!leaf_region(*arm.body, index)) return false;
+            if (arm.guard) effects(*arm.guard, caller, callers);
+            effects(*arm.body, caller, callers);
         }
-        return true;
+    }
+    void analyze_regions() {
+        region_safe.assign(program.functions.size(), true);
+        allocates_memory.assign(program.functions.size(), false);
+        std::vector<std::vector<std::size_t>> callers(program.functions.size());
+        std::vector<std::size_t> unsafe;
+        std::vector<std::size_t> allocating;
+        for (std::size_t i = 0; i < program.functions.size(); ++i) {
+            const auto& function = program.functions[i];
+            if (function.imported) region_safe[i] = false;
+            else {
+                effects(*function.body, i, callers);
+                allocates_memory[i] = allocates(*function.body);
+            }
+            if (!region_safe[i]) unsafe.push_back(i);
+            if (allocates_memory[i]) allocating.push_back(i);
+        }
+        for (std::size_t i = 0; i < unsafe.size(); ++i) {
+            for (const auto caller : callers[unsafe[i]]) {
+                if (!region_safe[caller]) continue;
+                region_safe[caller] = false;
+                unsafe.push_back(caller);
+            }
+        }
+        for (std::size_t i = 0; i < allocating.size(); ++i) {
+            for (const auto caller : callers[allocating[i]]) {
+                if (allocates_memory[caller]) continue;
+                allocates_memory[caller] = true;
+                allocating.push_back(caller);
+            }
+        }
     }
     bool allocates(const Expr& expr) {
         if (expr.value) return false;
@@ -300,6 +334,7 @@ class Emitter {
         int tail_label = -1;
         int accumulator = -1;
         int heap_mark = -1;
+        Expr* loop_condition = nullptr;
         bool safe_region = false;
         bool reference_parameters = false;
 
@@ -321,6 +356,21 @@ class Emitter {
         void zero(Type type) { constant(code, {type, 0}); }
         void one(Type type) { constant(code, {type, 1}); }
         void normalize_bool() { code.byte(0x45); code.byte(0x45); }
+        void condition(Expr& expr, bool negate = false) {
+            if (negate && expr.kind == Kind::Binary && (mask(type(*expr.args[0])) & elements) != 0 &&
+                type(*expr.args[0]) != Type::Float) {
+                static constexpr std::pair<const char*, const char*> inverse[] = {
+                    {"=", "<>"}, {"<>", "="}, {"<", ">="}, {">", "<="}, {"<=", ">"}, {">=", "<"}
+                };
+                for (const auto& entry : inverse) if (expr.name == entry.first) {
+                    expression(*expr.args[0]); expression(*expr.args[1]);
+                    code.byte(operation(entry.second, type(*expr.args[0])));
+                    return;
+                }
+            }
+            expression(expr);
+            if (negate) code.byte(0x45);
+        }
         void helper(Helper helper) {
             code.byte(0x10);
             code.u32(static_cast<std::size_t>(emitter.helper_indices[static_cast<std::size_t>(helper)]));
@@ -354,9 +404,9 @@ class Emitter {
         void index_access(Expr& expr, Expr* assigned = nullptr) {
             const Type array_type = type(*expr.args[0]);
             const Type element = type(expr);
-            const int pointer = temporary(Type::Int), index = temporary(Type::Int);
+            const int pointer = temporary(Type::Int), element_index = temporary(Type::Int);
             expression(*expr.args[0]); set(pointer);
-            expression(*expr.args[1]); set(index);
+            expression(*expr.args[1]); set(element_index);
             int value = -1;
             if (assigned) {
                 value = temporary(element);
@@ -365,10 +415,10 @@ class Emitter {
             if (!validated_parameter(*expr.args[0])) {
                 get(pointer); checked_reference(array_type); set(pointer);
             }
-            get(index); get(pointer); load(Type::Int);
+            get(element_index); get(pointer); load(Type::Int);
             code.byte(0x4f); begin(0x04); code.byte(0x00); end();
             get(pointer); constant(code, {Type::Int, 8}); code.byte(0x6a);
-            get(index); constant(code, {Type::Int, element_size(array_type) == 8 ? 3u : 2u});
+            get(element_index); constant(code, {Type::Int, element_size(array_type) == 8 ? 3u : 2u});
             code.byte(0x74); code.byte(0x6a);
             if (assigned) { get(value); store(element); }
             else load(element);
@@ -387,15 +437,15 @@ class Emitter {
             if (operation_id == Builtin::ArrayCreate) {
                 const Type element = type(*expr.args[1]);
                 const int length = temporary(Type::Int), initial = temporary(element);
-                const int pointer = temporary(Type::Int), index = temporary(Type::Int);
+                const int pointer = temporary(Type::Int), element_index = temporary(Type::Int);
                 set(length); expression(*expr.args[1]); set(initial);
                 get(length); allocate(type(expr)); set(pointer);
-                zero(Type::Int); set(index);
+                zero(Type::Int); set(element_index);
                 begin(0x02); begin(0x03);
-                get(index); get(length); code.byte(0x4f); branch(1, true);
-                get(pointer); get(index); constant(code, {Type::Int, element_size(type(expr)) == 8 ? 3u : 2u});
+                get(element_index); get(length); code.byte(0x4f); branch(1, true);
+                get(pointer); get(element_index); constant(code, {Type::Int, element_size(type(expr)) == 8 ? 3u : 2u});
                 code.byte(0x74); code.byte(0x6a); get(initial); store(element, 8);
-                get(index); one(Type::Int); code.byte(0x6a); set(index); branch(0);
+                get(element_index); one(Type::Int); code.byte(0x6a); set(element_index); branch(0);
                 end(); end();
                 get(pointer);
                 return;
@@ -545,7 +595,7 @@ class Emitter {
                 break;
             case Kind::Binary:
                 if (tail && accumulator >= 0 && emitter.addition_call(expr, index)) {
-                    get(accumulator); expression(*expr.args[0]); code.byte(operation("+", type(expr))); set(accumulator);
+                    expression(*expr.args[0]); get(accumulator); code.byte(operation("+", type(expr))); set(accumulator);
                     expression(*expr.args[1], true);
                     break;
                 }
@@ -596,7 +646,8 @@ class Emitter {
                             }
                         }
                         if (heap_mark >= 0 && !reference_parameters) restore_heap();
-                        branch(static_cast<unsigned>(controls - tail_label));
+                        if (loop_condition) condition(*loop_condition, true);
+                        branch(static_cast<unsigned>(controls - tail_label), loop_condition != nullptr);
                     } else {
                         code.byte(0x10);
                         code.u32(static_cast<std::size_t>(emitter.function_indices[static_cast<std::size_t>(expr.index)]));
@@ -689,11 +740,13 @@ class Emitter {
                 break;
             case Kind::Tuple:
                 throw std::logic_error("unexpected tuple in code generation");
+            case Kind::Lambda:
+                throw std::logic_error("unlowered lambda in code generation");
             }
         }
     public:
         Body(Emitter& emitter, Function& function, int index) : emitter(emitter), function(function), index(index) {
-            safe_region = emitter.options.optimize && emitter.leaf_region(*function.body, index);
+            safe_region = emitter.options.optimize && emitter.region_safe[static_cast<std::size_t>(index)];
             for (std::size_t i = 0; i < function.locals.size(); ++i) {
                 const auto type = emitter.type(function.locals[i]);
                 if (i < function.parameters && is_reference(type)) reference_parameters = true;
@@ -714,7 +767,7 @@ class Emitter {
                     get(locals[i]); checked_reference(emitter.type(function.locals[i])); code.byte(0x1a);
                 }
             }
-            if (safe_region && !is_reference(result) && emitter.allocates(*function.body) &&
+            if (safe_region && !is_reference(result) && emitter.allocates_memory[static_cast<std::size_t>(index)] &&
                 emitter.helpers[static_cast<std::size_t>(Helper::Allocate)]) {
                 heap_mark = temporary(Type::Int);
                 code.byte(0x23); code.u32(emitter.heap_global); set(heap_mark);
@@ -722,12 +775,30 @@ class Emitter {
             const bool additive = emitter.options.optimize && emitter.tail_addition(*function.body, index);
             if (additive) accumulator = temporary(result);
             const bool loop = emitter.options.optimize && (additive || emitter.tail_call(*function.body, index));
-            if (loop) {
-                begin(0x03, result);
+            auto& body_expr = *function.body;
+            const bool rotate = loop && body_expr.kind == Kind::If && !body_expr.args[0]->value &&
+                ((body_expr.args[2]->kind == Kind::Call && body_expr.args[2]->index == index) ||
+                 (additive && emitter.addition_call(*body_expr.args[2], index))) &&
+                !emitter.tail_call(*body_expr.args[1], index) && !emitter.tail_addition(*body_expr.args[1], index);
+            if (rotate) {
+                begin(0x02);
+                condition(*body_expr.args[0]); branch(0, true);
+                begin(0x03);
                 tail_label = controls;
+                loop_condition = body_expr.args[0].get();
+                expression(*body_expr.args[2], true);
+                end(); end();
+                loop_condition = nullptr;
+                tail_label = -1;
+                expression(*body_expr.args[1]);
+            } else {
+                if (loop) {
+                    begin(0x03, result);
+                    tail_label = controls;
+                }
+                expression(body_expr, true);
+                if (loop) end();
             }
-            expression(*function.body, true);
-            if (loop) end();
             if (accumulator >= 0) { get(accumulator); code.byte(operation("+", result)); }
             if (heap_mark >= 0) restore_heap();
             code.byte(0x0b);
@@ -753,6 +824,7 @@ public:
             throw Error({}, "maximum memory must be between 1 and 32767 pages");
         live_strings.resize(program.strings.size());
         string_offsets.resize(program.strings.size());
+        analyze_regions();
         for (const auto& name : options.exports)
             if (!exports.insert(name).second) throw Error({}, "duplicate export '" + name + "'");
         if (options.exports.empty()) {

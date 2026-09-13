@@ -257,6 +257,8 @@ std::string identifier(Token token) {
     return std::string(token.text);
 }
 
+} // namespace
+
 ExprPtr node(Kind kind, Token token) { return std::make_unique<Expr>(kind, token); }
 
 ExprPtr finish(ExprPtr value) {
@@ -268,6 +270,8 @@ ExprPtr finish(ExprPtr value) {
     if (value->depth > max_depth) throw Error(value->token.position, "expression is too deeply nested");
     return value;
 }
+
+namespace {
 
 ExprPtr literal(Token token, bool negative = false) {
     auto result = node(Kind::Literal, token);
@@ -446,6 +450,12 @@ class Parser {
                 value->value = Value{};
                 return value;
             }
+            if (precedence(peek().text) > 1 && peek(1).text == ")" &&
+                !is("|>") && !is("<|") && !is("&&") && !is("||")) {
+                auto value = node(Kind::Name, take());
+                require(")");
+                return value;
+            }
             auto value = sequence(false);
             if (accept(",")) {
                 auto tuple = node(Kind::Tuple, token);
@@ -518,6 +528,24 @@ class Parser {
     ExprPtr prefix() {
         Depth depth(*this);
         const Token token = peek();
+        if (accept("fun")) {
+            auto value = node(Kind::Lambda, token);
+            while (!is("->")) {
+                const auto param = parameter();
+                for (const auto& previous : value->args)
+                    if (!param.name.empty() && param.name != "_" && previous->name == param.name)
+                        throw Error(param.token.position, "duplicate lambda parameter '" + param.name + "'");
+                auto argument = node(Kind::Name, param.token);
+                argument->name = param.name;
+                argument->annotation = param.annotation;
+                value->args.push_back(std::move(argument));
+                if (value->args.size() > max_parameters) throw Error(token.position, "too many lambda parameters");
+            }
+            if (value->args.empty()) throw Error(token.position, "a lambda requires a parameter");
+            require("->");
+            value->args.push_back(kind(TokenKind::Newline) ? body() : sequence(false));
+            return finish(std::move(value));
+        }
         if (is("-") || is("+") || is("~~~")) {
             take();
             if (token.text == "-" && kind(TokenKind::Number)) return literal(take(), true);
@@ -624,6 +652,11 @@ class Parser {
         Depth depth(*this);
         auto left = prefix();
         for (;;) {
+            if (kind(TokenKind::Newline)) {
+                const auto saved = cursor;
+                newlines();
+                if (!is("|>") && !is("<|")) cursor = saved;
+            }
             const Token op = peek();
             const int priority = precedence(op.text);
             if (priority < minimum || priority == 0) break;
@@ -633,7 +666,7 @@ class Parser {
                 if (op.text == "<|") {
                     left = apply(std::move(left), std::move(right), op);
                 } else {
-                    const std::string temporary = "$pipe" + std::to_string(pipe_id++);
+                    const std::string temporary = std::string(1, '\0') + "pipe" + std::to_string(pipe_id++);
                     auto bind = node(Kind::Let, op);
                     bind->name = temporary;
                     bind->args.push_back(std::move(left));
@@ -712,6 +745,19 @@ class Parser {
         if (accept(":")) annotation = type();
         require("=");
         auto value = body();
+        if (parameters.empty() && value->kind == Kind::Lambda) {
+            if (annotation != all_types)
+                throw Error(token.position, "annotate lambda parameters rather than the function-valued binding");
+            for (std::size_t i = 0; i + 1 < value->args.size(); ++i) {
+                Local param;
+                param.token = value->args[i]->token;
+                param.name = value->args[i]->name;
+                param.annotation = value->args[i]->annotation;
+                parameters.push_back(std::move(param));
+            }
+            auto function_body = std::move(value->args.back());
+            value = std::move(function_body);
+        }
         if (parameters.empty()) {
             if (recursive) throw Error(token.position, "recursive values are not supported");
             Global global;

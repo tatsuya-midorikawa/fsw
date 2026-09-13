@@ -122,6 +122,7 @@ class Checker {
     std::vector<std::unordered_map<std::string, Symbol>> scopes;
     std::unordered_map<std::string, std::size_t> strings;
     std::size_t string_bytes = 0;
+    unsigned array_id = 0;
 
     Value string(const std::string& text, Position at) {
         const auto found = strings.find(text);
@@ -188,6 +189,108 @@ class Checker {
     void same(Expr& a, Expr& b) { types.unify(a.type, b.type, b.token.position); }
     void visit_args(Expr& expr) { for (auto& arg : expr.args) visit(*arg); }
 
+    void array_combinator(Expr& expr, const std::string& operation) {
+        const bool folding = operation == "Array.fold";
+        const bool mapping = operation == "Array.map";
+        const std::size_t arity = folding ? 3u : 2u;
+        if (expr.args.size() != arity)
+            throw Error(expr.token.position, "'" + operation + "' expects " + std::to_string(arity) + " argument(s)");
+        const Token at = expr.token;
+        const std::string prefix = std::string(1, '\0') + "array" + std::to_string(array_id++);
+        auto reference = [&](const std::string& name) {
+            auto result = node(Kind::Name, at);
+            result->name = name;
+            return result;
+        };
+        auto number = [&](std::uint64_t value) {
+            auto result = node(Kind::Literal, at);
+            result->value = Value{Type::Int, value};
+            return result;
+        };
+        auto unary_node = [&](Kind kind, ExprPtr arg) {
+            auto result = node(kind, at);
+            result->args.push_back(std::move(arg));
+            return finish(std::move(result));
+        };
+        auto binary_node = [&](Kind kind, ExprPtr left, ExprPtr right, std::string name = "") {
+            auto result = node(kind, at);
+            result->name = std::move(name);
+            result->args.push_back(std::move(left));
+            result->args.push_back(std::move(right));
+            return finish(std::move(result));
+        };
+        auto binding = [&](const std::string& name, ExprPtr value, bool mutable_value = false) {
+            auto result = unary_node(Kind::Let, std::move(value));
+            result->name = name;
+            result->flag = mutable_value;
+            return result;
+        };
+        auto block = node(Kind::Block, at);
+        auto callback = std::move(expr.args[0]);
+        const std::size_t callback_arity = folding ? 2u : 1u;
+        std::vector<std::string> cached;
+        if (callback->kind == Kind::Lambda) {
+            if (callback->args.size() != callback_arity + 1)
+                throw Error(callback->token.position, "callback has the wrong number of parameters");
+        } else if (callback->kind == Kind::Call || callback->kind == Kind::Name) {
+            for (auto& arg : callback->args) {
+                const auto name = prefix + ":arg" + std::to_string(cached.size());
+                block->args.push_back(binding(name, std::move(arg)));
+                cached.push_back(name);
+            }
+            callback->args.clear();
+        } else throw Error(callback->token.position, "use a lambda or a statically known function as the array callback");
+        const auto input = prefix + ":input", length = prefix + ":length";
+        const auto output = prefix + ":output", counter = prefix + ":index", state = prefix + ":state";
+        if (folding) block->args.push_back(binding(state, std::move(expr.args[1]), true));
+        block->args.push_back(binding(input, std::move(expr.args.back())));
+        block->args.push_back(binding(length, unary_node(Kind::Length, reference(input))));
+        if (mapping) {
+            auto allocate = unary_node(Kind::Call, reference(length));
+            allocate->name = std::string(1, '\0') + "Array.zeroCreate";
+            block->args.push_back(binding(output, std::move(allocate)));
+        }
+        std::vector<ExprPtr> arguments;
+        if (folding) arguments.push_back(reference(state));
+        arguments.push_back(binary_node(Kind::Index, reference(input), reference(counter)));
+        ExprPtr applied;
+        if (callback->kind == Kind::Lambda) {
+            applied = node(Kind::Block, callback->token);
+            for (std::size_t i = 0; i < arguments.size(); ++i) {
+                auto parameter = binding(callback->args[i]->name, std::move(arguments[i]));
+                parameter->token = callback->args[i]->token;
+                parameter->annotation = callback->args[i]->annotation;
+                applied->args.push_back(std::move(parameter));
+            }
+            applied->args.push_back(std::move(callback->args.back()));
+            applied = finish(std::move(applied));
+        } else {
+            callback->kind = Kind::Call;
+            for (const auto& name : cached) callback->args.push_back(reference(name));
+            for (auto& argument : arguments) callback->args.push_back(std::move(argument));
+            applied = finish(std::move(callback));
+        }
+        auto loop = node(Kind::For, at);
+        loop->name = counter;
+        loop->args.push_back(number(0));
+        loop->args.push_back(binary_node(Kind::Binary, reference(length), number(1), "-"));
+        if (mapping)
+            loop->args.push_back(binary_node(Kind::Assign,
+                binary_node(Kind::Index, reference(output), reference(counter)), std::move(applied)));
+        else if (folding)
+            loop->args.push_back(binary_node(Kind::Assign, reference(state), std::move(applied)));
+        else loop->args.push_back(std::move(applied));
+        block->args.push_back(finish(std::move(loop)));
+        if (mapping || folding) block->args.push_back(reference(mapping ? output : state));
+        else {
+            auto unit = node(Kind::Literal, at);
+            unit->value = Value{};
+            block->args.push_back(std::move(unit));
+        }
+        expr = std::move(*finish(std::move(block)));
+        visit(expr);
+    }
+
     void call(Expr& expr) {
         static const std::unordered_map<std::string, Builtin> builtins{
             {"not", Builtin::Not}, {"int", Builtin::Int}, {"int32", Builtin::Int},
@@ -196,8 +299,16 @@ class Checker {
             {"max", Builtin::Max}, {"sqrt", Builtin::Sqrt}, {"floor", Builtin::Floor},
             {"ceil", Builtin::Ceil}, {"truncate", Builtin::Truncate}, {"ignore", Builtin::Ignore},
             {"Array.zeroCreate", Builtin::ArrayZero}, {"Array.create", Builtin::ArrayCreate},
-            {"Array.length", Builtin::ArrayLength}, {"String.length", Builtin::StringLength}
+            {"Array.length", Builtin::ArrayLength}, {"String.length", Builtin::StringLength},
+            {std::string(1, '\0') + "Array.zeroCreate", Builtin::ArrayZero}
         };
+        if (expr.token.kind == TokenKind::Symbol) {
+            if (expr.args.size() != 2)
+                throw Error(expr.token.position, "binary operator functions require two arguments");
+            expr.kind = Kind::Binary;
+            visit(expr);
+            return;
+        }
         if (!expr.flag && find_local(expr.name))
             throw Error(expr.token.position, "local value '" + expr.name + "' is not a callable function");
         const std::string name = unqualified(expr);
@@ -220,6 +331,10 @@ class Checker {
                 types.unify(expr.args[i]->type, target.locals[i].type, expr.args[i]->token.position);
             types.unify(expr.type, target.result, expr.token.position);
             expr.index = found->second;
+            return;
+        }
+        if ((name == "Array.map" || name == "Array.fold" || name == "Array.iter") && !globals.count(name)) {
+            array_combinator(expr, name);
             return;
         }
         const auto builtin = builtins.find(name);
@@ -467,6 +582,8 @@ class Checker {
             visit_args(expr); result(expr, mask(Type::Unit));
             if (expr.args[0]->value) expr.value = Value{};
             break;
+        case Kind::Lambda:
+            throw Error(expr.token.position, "lambda values are supported in top-level function bindings and array callbacks");
         }
     }
 

@@ -62,6 +62,18 @@ const expressions = [
     ['abs -2147483648', []],
     ['abs -9223372036854775808L', []],
     ['let a = [|1|] in a.[-1]', []],
+    ['[|1; 2; 3|] |> Array.map (fun x -> x * x) |> Array.fold (+) 0', []],
+    ['Array.fold (+) 0 [|2147483647; 1|]', []],
+    ['Array.fold (-) 42 ([||] : int array)', []],
+    ['let k = 2.5 in Array.map (fun x -> x * k) [|1.0; 2.0; 3.0|] |> Array.fold (+) 0.0 |> int', []],
+    ['let mutable x = 0 in Array.iter (fun y -> x <- x + y) [|1; 2; 3|]; x', []],
+    ['Array.map ((+) 20) [|1; 1|] |> Array.fold (+) 0', []],
+    ['(-) ((+) 50 2) 10', []],
+    ['Array.fold (fun () x -> ignore x) () [|1; 2|]', []],
+    ['let mutable factor = 2 in Array.map (fun x -> let old = factor in factor <- factor + 1; x * old) [|1; 2; 3|] |> Array.fold (+) 0', []],
+    ['let mutable k = 1 in Array.map (fun x -> x * k) (k <- 5; [|1; 2|]) |> Array.fold (+) 0', []],
+    ['let x = 40 in Array.map (fun y -> x + y) (let x = 100 in [|1; 1|]) |> Array.fold (+) 0', []],
+    ['let a = [|1; 2; 3|] in Array.map (fun x -> a.[1] <- 40; x) a |> Array.fold (+) 0', []],
 ];
 
 function execute(command, args) {
@@ -100,7 +112,9 @@ try {
     }
     const examples = fileURLToPath(new URL('../examples/', import.meta.url)).replaceAll('\\', '/');
     writeFileSync(join(directory, 'examples.fsx'),
-        `#load @"${examples}math.fs"\n#load @"${examples}arrays.fs"\n#load @"${examples}browser/app.fs"\n` +
+        `#load @"${examples}math.fs"\n#load @"${examples}arrays.fs"\n#load @"${examples}functional.fs"\n#load @"${examples}browser/app.fs"\n` +
+        'assert (Functional.sumSquares [|1; 2; 3|] = 14)\n' +
+        'assert (Functional.sumWithCapture [|1; 2; 3|] = 6)\n' +
         'printfn "%d" (Math.FibonacciFast 20)\nprintfn "%A" (Arrays.sum [| 1.25; 2.5; 3.75 |])\n');
     assert.deepEqual(execute('dotnet', ['fsi', '--exec', join(directory, 'examples.fsx')]).split(/\r?\n/), ['6765', '7.5']);
     console.log(`OK: ${expressions.length} expressions match the F# reference compiler in both optimization modes`);

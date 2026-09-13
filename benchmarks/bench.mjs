@@ -80,12 +80,19 @@ try {
         [1.25, 2.5, 3.75].forEach((value, i) => e.set(pointer, i, value));
         assert.equal(e.sum(pointer), 7.5);
     });
+    const functional = measure(readFileSync(fileURLToPath(new URL('../examples/functional.fs', import.meta.url)), 'utf8'), e => {
+        const pointer = e.sample();
+        assert.equal(e.sumSquares(pointer), 14);
+        assert.equal(e.sumWithCapture(pointer), 6);
+    });
+    const functionalInput = functional.exports.sample();
     const execution = {
         fibonacci_28: runtime(kernels.exports.Fibonacci, [28], 5, 317811),
         fibonacci_fast_40: runtime(kernels.exports.FibonacciFast, [40], 100_000, 102334155),
         sum_10000: runtime(kernels.exports.Sum, [10_000], 1000, 50005000),
+        functional_sum_squares_3: runtime(functional.exports.sumSquares, [functionalInput], 100_000, 14),
     };
-    for (const workload of [add, kernels, bulk, arrays]) delete workload.exports;
+    for (const workload of [add, kernels, bulk, arrays, functional]) delete workload.exports;
     console.log(JSON.stringify({
         schema: 1,
         timestamp: new Date().toISOString(),
@@ -97,7 +104,7 @@ try {
         },
         samples,
         warmups: 3,
-        workloads: { add, kernels, bulk_1000: bulk, arrays },
+        workloads: { add, kernels, bulk_1000: bulk, arrays, functional },
         execution,
     }, null, 2));
 } finally {

@@ -329,7 +329,7 @@ let save (s: string) = saved <- s + "!"
     assert.throws(() => capped.make(0), WebAssembly.RuntimeError);
     assert.equal(capped.memory.buffer.byteLength, 65536);
 
-    for (const file of ['math.fs', 'arrays.fs']) {
+    for (const file of ['math.fs', 'arrays.fs', 'functional.fs']) {
         const source = readFileSync(fileURLToPath(new URL(`../examples/${file}`, import.meta.url)), 'utf8');
         build(source);
     }
@@ -359,11 +359,22 @@ let rec sum n acc = if n <= 0 then acc else sum (n - 1) (acc + n)
 let rec swap n a b = if n = 0 then a - b else swap (n - 1) b a
 let rec triangle n = if n <= 0 then 0 else n + triangle (n - 1)
 let rec wideTriangle n = if n <= 0 then 0L else int64 n + wideTriangle (n - 1)
+let rec floatCondition (x: float) n =
+    if x < 1.0 then n
+    else floatCondition (if n = 0 then 0.0 / 0.0 else 0.0) (n + 1)
+let rec bothDirections n acc =
+    if n > 0 then bothDirections (n - 1) (acc + 1)
+    else if n < 0 then bothDirections (n + 1) (acc - 1)
+    else acc
 `);
     assert.equal(tail.sum(1_000_000, 0), 1784293664);
     assert.equal(tail.swap(1_000_001, 42, 1), -41);
     assert.equal(tail.triangle(1_000_000), 1784293664);
     assert.equal(tail.wideTriangle(1_000_000), 500000500000n);
+    assert.equal(tail.floatCondition(2, 0), 2);
+    assert.equal(tail.floatCondition(NaN, 0), 2);
+    assert.equal(tail.bothDirections(100_000, 0), 100_000);
+    assert.equal(tail.bothDirections(-100_000, 0), -100_000);
 
     const { exports: regions } = build(`
 let scratch n =
@@ -375,9 +386,13 @@ let rec scratchLoop n acc =
     else
         let values = Array.create 64 n
         scratchLoop (n - 1) (acc + values.[0])
+let rec scratchArgument n =
+    if n <= 0 then 42
+    else scratchArgument (n - 1 + Array.length (Array.zeroCreate<int> 0))
 `, ['--max-memory-pages', '1']);
     for (let i = 0; i < 1000; i++) assert.equal(regions.scratch(1000), 42);
     assert.equal(regions.scratchLoop(100_000, 0), 705082704);
+    assert.equal(regions.scratchArgument(100_000), 42);
     assert.equal(regions.memory.buffer.byteLength, 65536);
 
     const retained = [];
@@ -406,6 +421,100 @@ let make () = Array.zeroCreate<int> 1
     assert.deepEqual(observed, [4, 3, 2, 1]);
     assert.throws(() => sideEffects.storeWithEffect(sideEffects.make(), 1), WebAssembly.RuntimeError);
     assert.deepEqual(observed, [4, 3, 2, 1, 42]);
+    const order = [];
+    const traced = build(`
+open System.Runtime.InteropServices
+[<DllImport("host")>]
+extern bool finished(int value)
+[<DllImport("host")>]
+extern int visit(int value)
+let rec walk n acc =
+    if finished n then acc
+    else walk (n - 1) (acc + visit n)
+`, [], { host: {
+        finished: n => { order.push(`check:${n}`); return n === 0; },
+        visit: n => { order.push(`visit:${n}`); return n; },
+    } }).exports;
+    assert.equal(traced.walk(3, 0), 6);
+    assert.deepEqual(order, ['check:3', 'visit:3', 'check:2', 'visit:2', 'check:1', 'visit:1', 'check:0']);
+
+    for (const flags of [[], ['--no-opt']]) {
+        const functional = build(`
+let square = fun value -> value * value
+let rec countdown = fun n -> if n <= 0 then 42 else countdown (n - 1)
+let plus k x = k + x
+let sumSquares () = [|1; 2; 3|] |> Array.map square |> Array.fold (+) 0
+let partial () = Array.map (plus 40) [|1; 2|] |> Array.fold (+) 0
+let captured scale =
+    let values = [|1.0; 2.0; 3.0|]
+    Array.map (fun value -> value * scale) values |> Array.fold (+) 0.0
+let mutateCapture () =
+    let mutable total = 0
+    Array.iter (fun x -> total <- total + x) [|1; 2; 3|]
+    total
+let shadow x = Array.fold (fun x y -> x + y) x [|1; 2|] + x
+let empty () = Array.fold (fun state value -> state + value) 42 ([||] : int array)
+let boolMap () = Array.map not [|true; false|]
+let countTrue values = Array.fold (fun n b -> if b then n + 1 else n) 0 values
+let wide () = Array.map (fun (x: int) -> int64 x) [|20; 22|] |> Array.fold (+) 0L
+let operators () = (-) ((+) 50 2) 10
+let hiddenName () =
+    let \`\`$pipe0\`\` = 40
+    2 |> plus \`\`$pipe0\`\`
+`, flags).exports;
+        assert.equal(functional.sumSquares(), 14);
+        assert.equal(functional.partial(), 83);
+        assert.equal(functional.captured(2.5), 15);
+        assert.equal(functional.mutateCapture(), 6);
+        assert.equal(functional.shadow(10), 23);
+        assert.equal(functional.empty(), 42);
+        assert.equal(functional.countTrue(functional.boolMap()), 1);
+        assert.equal(functional.wide(), 42n);
+        assert.equal(functional.operators(), 42);
+        assert.equal(functional.hiddenName(), 42);
+        assert.equal(functional.countdown(flags.length ? 100 : 100_000), 42);
+    }
+    const callbackOrder = [];
+    const callbackEffects = build(`
+open System.Runtime.InteropServices
+[<DllImport("host")>]
+extern int note(int value)
+let plus k x = k + x
+let input () =
+    ignore (note 3)
+    [|1; 2|]
+let run () = Array.map (plus (note 10)) (input ()) |> Array.fold (+) 0
+`, [], { host: { note: n => { callbackOrder.push(n); return n; } } }).exports;
+    assert.equal(callbackEffects.run(), 23);
+    assert.deepEqual(callbackOrder, [10, 3]);
+    const hygienic = build('let plus a b = a + b\nlet run () =\n    let ``$pipe0`` = 40\n    2 |> plus ``$pipe0``\n').exports;
+    assert.equal(hygienic.run(), 42);
+    const functionalRegions = build(`
+let square x = x * x
+let make () = [|1; 2; 3|]
+let sumSquares values = Array.map square values |> Array.fold (+) 0
+let temporary () = Array.create 100 42
+let nested () = Array.fold (+) 0 (temporary ())
+let \`\`Array.zeroCreate\`\` n = n + 100
+`, ['--max-memory-pages', '1']).exports;
+    const functionalInput = functionalRegions.make();
+    for (let i = 0; i < 5000; ++i) {
+        assert.equal(functionalRegions.sumSquares(functionalInput), 14);
+        assert.equal(functionalRegions.nested(), 4200);
+    }
+    assert.equal(functionalRegions.memory.buffer.byteLength, 65536);
+    const indirectRetained = [];
+    const indirectEscape = build(`
+open System.Runtime.InteropServices
+[<DllImport("host")>]
+extern void retain(int[] values)
+let wrapper values = retain values
+let publish n = wrapper (Array.create n 42)
+`, ['--max-memory-pages', '1'], { host: { retain: pointer => indirectRetained.push(pointer) } }).exports;
+    indirectEscape.publish(4);
+    indirectEscape.publish(4);
+    assert.notEqual(indirectRetained[0], indirectRetained[1]);
+    assert.deepEqual([...new Int32Array(indirectEscape.memory.buffer, indirectRetained[0] + 8, 4)], [42, 42, 42, 42]);
 
     let seed = 0x465357;
     const random = limit => {
@@ -520,6 +629,13 @@ let make () = Array.zeroCreate<int> 1
     rejects('let f () = 1\0', /NUL/);
     rejects(`[<DllImport("host")>]\nextern int f(${Array.from({ length: 257 }, (_, i) => `int p${i}`).join(', ')})`, /too many parameters/);
     rejects('let f () = missing ' + '1 '.repeat(257), /too many function arguments/);
+    rejects('let f () = Array.map (fun x y -> x + y) [|1|]', /wrong number/);
+    rejects('let f () = Array.iter (fun x -> x + 1) [|1|]', /type mismatch/);
+    rejects('let f () = Array.map (fun x -> x + 1.0) [|1|]', /type mismatch/);
+    rejects('let f () = Array.fold (fun s x -> s + x) false [|1|]', /type mismatch/);
+    rejects('let f () = let g = fun x -> x + 1 in g 1', /lambda values/);
+    rejects('let f: int = fun x -> x + 1', /function-valued binding/);
+    rejects('let f () = Array.map (fun x x -> x) [|1|]', /duplicate lambda parameter/);
     rejects(`let f () = ${'('.repeat(300)}1${')'.repeat(300)}`, /deeply nested/);
     rejects(`let f () = ${'1 + '.repeat(300)}1`, /deeply nested/);
 

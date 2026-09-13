@@ -63,4 +63,4 @@ jobs:
         run: |
           c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
             -DFSW_STANDALONE_FUZZ src/frontend.cpp src/check.cpp src/wasm.cpp tests/fuzz.cpp -o build/fsw-fuzz
-          build/fsw-fuzz examples/math.fs examples/arrays.fs examples/browser/app.fs
+          build/fsw-fuzz examples/math.fs examples/arrays.fs examples/functional.fs examples/browser/app.fs
